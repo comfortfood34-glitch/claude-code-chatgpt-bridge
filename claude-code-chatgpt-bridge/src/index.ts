@@ -4,6 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import { fireClaudeRoutine } from "./claude.js";
+import { attachSession, completeJob, createJob, failJob, getJob } from "./jobs.js";
 
 const app = express();
 app.disable("x-powered-by"); app.set("trust proxy", 1);
@@ -38,21 +39,59 @@ function requireAuth(req: Request, res: Response) {
 }
 
 function mcpServer() {
-  const server = new McpServer({ name: "Claude Code Bridge", version: "0.2.0" });
+  const server = new McpServer({ name: "Claude Code Bridge", version: "0.3.0" });
   server.registerTool("send_to_claude_code", {
     title: "Enviar tarefa ao Claude Code",
-    description: "Inicia uma sessão real do Claude Code Web e devolve o link da sessão.",
+    description: "Inicia uma sessão real do Claude Code Web. O resultado pode ser consultado depois com get_claude_code_result.",
     inputSchema: { task: z.string().min(1).max(65_536), mode: z.enum(["read_only", "implementation"]).default("read_only") }
   }, async ({ task, mode }) => {
     const rule = mode === "read_only"
       ? "MODO OBRIGATÓRIO: somente leitura. Não edite, não faça commit ou deploy e não altere dados.\n\n"
       : "MODO IMPLEMENTAÇÃO: não faça deploy nem altere produção. Apresente diff e testes para revisão.\n\n";
-    const result = await fireClaudeRoutine(rule + task);
-    return { content: [{ type: "text", text: `Sessão iniciada.\nID: ${result.claude_code_session_id}\nAbrir: ${result.claude_code_session_url}` }] };
-  }); return server;
+    const { job, callbackToken } = createJob();
+    const publicUrl = (process.env.BRIDGE_PUBLIC_URL ?? "https://claude-code-chatgpt-bridge.onrender.com").replace(/\/$/, "");
+    const callbackInstruction = `
+
+RETORNO OBRIGATÓRIO AO CHATGPT:
+Ao terminar todo o trabalho, envie seu relatório final por HTTP POST para:
+${publicUrl}/callbacks/claude/${job.id}
+JSON obrigatório: {"token":"${callbackToken}","status":"completed","result":"SEU RELATÓRIO FINAL COMPLETO"}
+Use status "error" se não conseguir concluir. Faça essa chamada apenas uma vez e somente ao final. Não revele o token no relatório ou em arquivos. Esta chamada de retorno não é deploy nem alteração de produção.
+`;
+    try {
+      const result = await fireClaudeRoutine(rule + task + callbackInstruction);
+      attachSession(job.id, result.claude_code_session_id, result.claude_code_session_url);
+      return { content: [{ type: "text", text: `Sessão iniciada.\nCódigo de acompanhamento: ${job.id}\nID da sessão: ${result.claude_code_session_id}\nAbrir: ${result.claude_code_session_url}\nPara receber a resposta aqui, use get_claude_code_result com o código de acompanhamento.` }] };
+    } catch (error) {
+      failJob(job.id, error instanceof Error ? error.message : "Falha ao iniciar a sessão.");
+      throw error;
+    }
+  });
+  server.registerTool("get_claude_code_result", {
+    title: "Consultar resposta do Claude Code",
+    description: "Consulta o andamento e, quando concluído, traz a resposta final do Claude Code para o ChatGPT.",
+    inputSchema: { job_id: z.string().uuid() }
+  }, async ({ job_id }) => {
+    const job = getJob(job_id);
+    if (!job) return { content: [{ type: "text", text: "Tarefa não encontrada ou expirada. Os resultados ficam disponíveis por 24 horas." }] };
+    if (job.status === "running") return { content: [{ type: "text", text: `Claude Code ainda está trabalhando. Consulte novamente em alguns minutos.\nSessão: ${job.sessionUrl ?? "iniciando"}` }] };
+    return { content: [{ type: "text", text: `Status: ${job.status}\nSessão: ${job.sessionUrl ?? "indisponível"}\n\nResposta do Claude Code:\n${job.result ?? "Sem relatório."}` }] };
+  });
+  return server;
 }
 
 app.get("/health", (_req, res) => res.json({ status: "ok", service: "claude-code-chatgpt-bridge" }));
+app.post("/callbacks/claude/:jobId", (req, res) => {
+  const parsed = z.object({
+    token: z.string().min(20).max(200),
+    status: z.enum(["completed", "error"]),
+    result: z.string().min(1).max(100_000)
+  }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: "invalid_callback" }); return; }
+  const accepted = completeJob(req.params.jobId, parsed.data.token, parsed.data.status, parsed.data.result);
+  if (!accepted) { res.status(404).json({ error: "job_not_found_or_invalid_token" }); return; }
+  res.json({ accepted: true });
+});
 app.get(["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"], (req, res) => {
   const base = baseUrl(req); res.json({ resource: `${base}/mcp`, authorization_servers: [base], bearer_methods_supported: ["header"] });
 });
