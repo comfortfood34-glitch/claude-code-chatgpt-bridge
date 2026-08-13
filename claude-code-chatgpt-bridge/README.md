@@ -8,7 +8,8 @@ Servidor MCP privado que permite ao ChatGPT iniciar uma sessão real do Claude C
 - A URL de destino é restrita ao endpoint oficial `api.anthropic.com` para impedir chamadas arbitrárias.
 - O modo padrão é somente leitura.
 - A rotina deve ser configurada sem deploy automático e sem alterações em produção.
-- Cada solicitação cria uma nova sessão do Claude Code e retorna seu link.
+- Cada solicitação cria uma nova sessão do Claude Code, retorna seu link e um código de acompanhamento.
+- Ao terminar, o Claude envia o relatório à ponte por um callback assinado e temporário.
 
 ## 1. Criar a rotina no Claude Code
 
@@ -28,6 +29,7 @@ Crie um novo Blueprint apontando para este projeto. Configure os segredos solici
 - `CLAUDE_ROUTINE_FIRE_URL`: URL completa fornecida pela rotina.
 - `CLAUDE_ROUTINE_TOKEN`: token da rotina iniciado por `sk-ant-oat01-`.
 - `BRIDGE_ACCESS_TOKEN`: segredo longo usado pelo ChatGPT para acessar a ponte.
+- `BRIDGE_PUBLIC_URL`: URL pública da ponte, por exemplo `https://claude-code-chatgpt-bridge.onrender.com`.
 
 Após a implantação, confirme que `https://SEU-SERVICO.onrender.com/health` retorna `status: ok`.
 
@@ -35,12 +37,13 @@ Após a implantação, confirme que `https://SEU-SERVICO.onrender.com/health` re
 
 Cadastre o servidor MCP privado usando:
 
-- URL: `https://SEU-SERVICO.onrender.com/mcp`
-- Autenticação: Bearer token
-- Token: o mesmo valor de `BRIDGE_ACCESS_TOKEN`
+- URL: `https://SEU-SERVICO.onrender.com/mcp?key=SEU_BRIDGE_ACCESS_TOKEN`
+- Autenticação: sem autenticação (o segredo já está incorporado na URL privada)
 
-O plugin expõe a ferramenta `send_to_claude_code`, com os modos `read_only` e `implementation`.
+Não compartilhe, registre em capturas ou envie essa URL completa por mensagens. Se ela for exposta, gere um novo `BRIDGE_ACCESS_TOKEN` no Render e atualize a configuração do plugin.
 
-## Limitação oficial
+O plugin expõe `send_to_claude_code`, com os modos `read_only` e `implementation`, e `get_claude_code_result`, que traz o relatório final de volta ao ChatGPT.
 
-A API experimental de Rotinas inicia a sessão e devolve o link, mas não transmite a saída nem aguarda a conclusão. Para ver o resultado ou continuar, abra o link retornado pelo plugin.
+## Funcionamento do retorno
+
+A API experimental de Rotinas inicia a sessão, mas não transmite sua saída. Por isso, a ponte inclui no prompt um callback assinado. Quando o Claude termina, publica o relatório nesse callback. O ChatGPT consulta o resultado usando o código de acompanhamento. Resultados ficam em memória por 24 horas; uma reinicialização do serviço gratuito do Render pode removê-los.
