@@ -15,3 +15,7 @@ services:
         sync: false
       - key: BRIDGE_ACCESS_TOKEN
         generateValue: true
+      - key: REDIS_URL
+        sync: false
+      - key: JOB_RUNNING_TIMEOUT_MS
+        value: "1200000"

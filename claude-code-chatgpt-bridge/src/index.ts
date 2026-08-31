@@ -48,7 +48,7 @@ function mcpServer() {
     const rule = mode === "read_only"
       ? "MODO OBRIGATÓRIO: somente leitura. Não edite, não faça commit ou deploy e não altere dados.\n\n"
       : "MODO IMPLEMENTAÇÃO: não faça deploy nem altere produção. Apresente diff e testes para revisão.\n\n";
-    const { job, callbackToken } = createJob();
+    const { job, callbackToken } = await createJob();
     const publicUrl = (process.env.BRIDGE_PUBLIC_URL ?? "https://claude-code-chatgpt-bridge.onrender.com").replace(/\/$/, "");
     const callbackInstruction = `
 
@@ -60,10 +60,10 @@ Use status "error" se não conseguir concluir. Faça essa chamada apenas uma vez
 `;
     try {
       const result = await fireClaudeRoutine(rule + task + callbackInstruction);
-      attachSession(job.id, result.claude_code_session_id, result.claude_code_session_url);
+      await attachSession(job.id, result.claude_code_session_id, result.claude_code_session_url);
       return { content: [{ type: "text", text: `Sessão iniciada.\nCódigo de acompanhamento: ${job.id}\nID da sessão: ${result.claude_code_session_id}\nAbrir: ${result.claude_code_session_url}\nPara receber a resposta aqui, use get_claude_code_result com o código de acompanhamento.` }] };
     } catch (error) {
-      failJob(job.id, error instanceof Error ? error.message : "Falha ao iniciar a sessão.");
+      await failJob(job.id, error instanceof Error ? error.message : "Falha ao iniciar a sessão.");
       throw error;
     }
   });
@@ -72,7 +72,7 @@ Use status "error" se não conseguir concluir. Faça essa chamada apenas uma vez
     description: "Consulta o andamento e, quando concluído, traz a resposta final do Claude Code para o ChatGPT.",
     inputSchema: { job_id: z.string().uuid() }
   }, async ({ job_id }) => {
-    const job = getJob(job_id);
+    const job = await getJob(job_id);
     if (!job) return { content: [{ type: "text", text: "Tarefa não encontrada ou expirada. Os resultados ficam disponíveis por 24 horas." }] };
     if (job.status === "running") return { content: [{ type: "text", text: `Claude Code ainda está trabalhando. Consulte novamente em alguns minutos.\nSessão: ${job.sessionUrl ?? "iniciando"}` }] };
     return { content: [{ type: "text", text: `Status: ${job.status}\nSessão: ${job.sessionUrl ?? "indisponível"}\n\nResposta do Claude Code:\n${job.result ?? "Sem relatório."}` }] };
@@ -81,14 +81,14 @@ Use status "error" se não conseguir concluir. Faça essa chamada apenas uma vez
 }
 
 app.get("/health", (_req, res) => res.json({ status: "ok", service: "claude-code-chatgpt-bridge" }));
-app.post("/callbacks/claude/:jobId", (req, res) => {
+app.post("/callbacks/claude/:jobId", async (req, res) => {
   const parsed = z.object({
     token: z.string().min(20).max(200),
     status: z.enum(["completed", "error"]),
     result: z.string().min(1).max(100_000)
   }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: "invalid_callback" }); return; }
-  const accepted = completeJob(req.params.jobId, parsed.data.token, parsed.data.status, parsed.data.result);
+  const accepted = await completeJob(req.params.jobId, parsed.data.token, parsed.data.status, parsed.data.result);
   if (!accepted) { res.status(404).json({ error: "job_not_found_or_invalid_token" }); return; }
   res.json({ accepted: true });
 });
