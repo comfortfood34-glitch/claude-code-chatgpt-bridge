@@ -18,4 +18,4 @@ services:
       - key: REDIS_URL
         sync: false
       - key: JOB_RUNNING_TIMEOUT_MS
-        value: "1200000"
+        value: "10800000"
