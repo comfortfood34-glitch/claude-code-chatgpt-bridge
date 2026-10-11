@@ -89,9 +89,16 @@ function requireOfficeAuth(req: Request, res: Response): boolean {
   if (a.length !== b.length || !timingSafeEqual(a, b)) { res.status(401).json({ error: "unauthorized" }); return false; }
   return true;
 }
-app.get("/office/status", (req, res) => {
+app.get("/office/status", async (req, res) => {
   if (!requireOfficeAuth(req, res)) return;
-  res.set("Cache-Control", "no-store").json({ status: "ok", routine_configured: Boolean(process.env.CLAUDE_ROUTINE_TOKEN && process.env.CLAUDE_ROUTINE_FIRE_URL), storage: process.env.REDIS_URL ? "redis" : "memory" });
+  let providerStatus: number | null = null;
+  if (req.query.probe === "1") {
+    const target = process.env.CLAUDE_ROUTINE_FIRE_URL ?? "";
+    if (/^https:\/\/api\.anthropic\.com\/v1\/claude_code\/routines\/trig_[A-Za-z0-9_-]+\/fire$/.test(target)) {
+      try { const probe = await fetch(target, { method: "GET", headers: { Authorization: "Bearer " + (process.env.CLAUDE_ROUTINE_TOKEN ?? ""), "anthropic-version": "2023-06-01", "anthropic-beta": "experimental-cc-routine-2026-04-01" }, signal: AbortSignal.timeout(15000) }); providerStatus = probe.status; } catch { /* No retry. */ }
+    }
+  }
+  res.set("Cache-Control", "no-store").json({ status: "ok", routine_configured: Boolean(process.env.CLAUDE_ROUTINE_TOKEN && process.env.CLAUDE_ROUTINE_FIRE_URL), storage: process.env.REDIS_URL ? "redis" : "memory", provider_probe_status: providerStatus });
 });
 app.post("/office/jobs", async (req, res) => {
   if (!requireOfficeAuth(req, res)) return;
@@ -106,9 +113,13 @@ app.post("/office/jobs", async (req, res) => {
       const session = await fireClaudeRoutine(rule + "\n\n" + parsed.data.task + callback);
       await attachSession(job.id, session.claude_code_session_id, session.claude_code_session_url);
       res.set("Cache-Control", "no-store").status(202).json({ job_id: job.id, status: "running", session_url: session.claude_code_session_url });
-    } catch {
-      await failJob(job.id, "Não foi possível confirmar o início da sessão. Não reenvie automaticamente; consulte a rotina.");
-      res.status(502).json({ job_id: job.id, status: "uncertain", error: "Não foi possível confirmar o início da sessão Claude. Não houve reenvio automático." });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "unknown";
+      const providerStatus = /Claude routine failed \((\d{3})\)/.exec(message)?.[1];
+      const reason = providerStatus ? "A Anthropic recusou o início da rotina (HTTP " + providerStatus + ")." : message.includes("CLAUDE_ROUTINE") ? "A configuração da rotina Claude é inválida." : "Não foi possível confirmar o início da sessão.";
+      console.error(JSON.stringify({ event: "office_routine_failed", job_id: job.id, provider_status: providerStatus ?? null, kind: message.includes("CLAUDE_ROUTINE") ? "configuration" : providerStatus ? "provider_rejection" : "unknown" }));
+      await failJob(job.id, reason);
+      res.status(502).json({ job_id: job.id, status: providerStatus ? "failed" : "uncertain", provider_status: providerStatus ?? null, error: reason + " Não houve reenvio automático." });
     }
   } catch { res.status(503).json({ error: "job_storage_unavailable" }); }
 });
