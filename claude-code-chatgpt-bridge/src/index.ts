@@ -80,6 +80,48 @@ Use status "error" se não conseguir concluir. Faça essa chamada apenas uma vez
   return server;
 }
 
+// Dedicated server-to-server API for the owner-private Kai Office.
+function requireOfficeAuth(req: Request, res: Response): boolean {
+  const configured = process.env.KAI_OFFICE_ACCESS_TOKEN;
+  const provided = req.header("authorization")?.replace(/^Bearer\s+/i, "") ?? "";
+  if (!configured || configured.length < 32) { res.status(503).json({ error: "office_not_configured" }); return false; }
+  const a = Buffer.from(provided), b = Buffer.from(configured);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) { res.status(401).json({ error: "unauthorized" }); return false; }
+  return true;
+}
+app.get("/office/status", (req, res) => {
+  if (!requireOfficeAuth(req, res)) return;
+  res.set("Cache-Control", "no-store").json({ status: "ok", routine_configured: Boolean(process.env.CLAUDE_ROUTINE_TOKEN && process.env.CLAUDE_ROUTINE_FIRE_URL), storage: process.env.REDIS_URL ? "redis" : "memory" });
+});
+app.post("/office/jobs", async (req, res) => {
+  if (!requireOfficeAuth(req, res)) return;
+  const parsed = z.object({ task: z.string().min(1).max(50000), mode: z.enum(["read_only", "implementation"]).default("read_only") }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: "invalid_task" }); return; }
+  try {
+    const { job, callbackToken } = await createJob();
+    const publicUrl = (process.env.BRIDGE_PUBLIC_URL ?? "https://claude-code-chatgpt-bridge.onrender.com").replace(/\/$/, "");
+    const rule = parsed.data.mode === "read_only" ? "MODO SOMENTE LEITURA: não edite arquivos, não faça commits, deploy nem alterações em dados." : "MODO IMPLEMENTAÇÃO: trabalhe apenas no repositório configurado. Não faça deploy nem altere produção. Apresente diff e testes para revisão.";
+    const callback = `\n\nRETORNO OBRIGATÓRIO: ao terminar, envie uma única chamada HTTP POST para ${publicUrl}/callbacks/claude/${job.id} com JSON {"token":"${callbackToken}","status":"completed","result":"RELATÓRIO FINAL COMPLETO"}. Use status "error" se não concluir. Não exponha o token em relatório, arquivos ou commits. O retorno não é deploy nem alteração de produção.`;
+    try {
+      const session = await fireClaudeRoutine(rule + "\n\n" + parsed.data.task + callback);
+      await attachSession(job.id, session.claude_code_session_id, session.claude_code_session_url);
+      res.set("Cache-Control", "no-store").status(202).json({ job_id: job.id, status: "running", session_url: session.claude_code_session_url });
+    } catch {
+      await failJob(job.id, "Não foi possível confirmar o início da sessão. Não reenvie automaticamente; consulte a rotina.");
+      res.status(502).json({ job_id: job.id, status: "uncertain", error: "Não foi possível confirmar o início da sessão Claude. Não houve reenvio automático." });
+    }
+  } catch { res.status(503).json({ error: "job_storage_unavailable" }); }
+});
+app.get("/office/jobs/:jobId", async (req, res) => {
+  if (!requireOfficeAuth(req, res)) return;
+  if (!z.string().uuid().safeParse(req.params.jobId).success) { res.status(400).json({ error: "invalid_job_id" }); return; }
+  try {
+    const job = await getJob(req.params.jobId);
+    if (!job) { res.status(404).json({ error: "job_not_found_or_expired" }); return; }
+    res.set("Cache-Control", "no-store").json({ job_id: job.id, status: job.status, session_url: job.sessionUrl ?? null, result: job.result ?? null });
+  } catch { res.status(503).json({ error: "job_storage_unavailable" }); }
+});
+
 app.get("/health", (_req, res) => res.json({ status: "ok", service: "claude-code-chatgpt-bridge" }));
 app.post("/callbacks/claude/:jobId", async (req, res) => {
   const parsed = z.object({
