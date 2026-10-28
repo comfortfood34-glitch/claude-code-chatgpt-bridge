@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { validateRoutineUrl } from "./claude.js";
 
+// Tests must always use the isolated in-memory store, including on Render where REDIS_URL is set.
+delete process.env.REDIS_URL;
 process.env.BRIDGE_ACCESS_TOKEN = "test-secret-that-is-longer-than-thirty-two-characters";
 process.env.JOB_RUNNING_TIMEOUT_MS = "50";
 // No REDIS_URL set here on purpose: exercises the in-memory fallback store.
