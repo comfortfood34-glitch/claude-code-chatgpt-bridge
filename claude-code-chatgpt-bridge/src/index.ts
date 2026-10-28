@@ -9,7 +9,7 @@ import { attachSession, completeJob, createJob, failJob, getJob, markJobSent } f
 import { ackMacFollowup, authorizedRelayToken, claimMacFollowup, enqueueMacFollowup, readMacRelayState } from "./mac-relay.js";
 
 import { grokConfiguration, probeGrok, logGrokReadiness, ReviewRequest, validSignature, webhookReview } from "./grok.js";
-import { enqueueReview, getReviewJob, startGrokWorker } from "./grok-queue.js";
+import { enqueueReview, getReviewJob, reviewQueueStatus, startGrokWorker } from "./grok-queue.js";
 
 const app = express();
 app.disable("x-powered-by"); app.set("trust proxy", 1);
@@ -63,6 +63,11 @@ function mcpServer() {
     description: "ATENÇÃO: inicia uma sessão NOVA. Para continuar o trabalho do projeto na MESMA conversa, use continue_claude_code_session; só use esta ferramenta quando o usuário pedir expressamente uma nova sessão.",
     inputSchema: { task: z.string().min(1).max(65_536), mode: z.enum(["read_only", "implementation"]).default("read_only"), create_new_session: z.boolean().default(false) }
   }, async ({ task, mode, create_new_session }) => {
+    // Compatibility for clients that have not refreshed the new Grok MCP tools.
+    if (task.trim() === "GROK_STATUS") return { content: [{ type: "text", text: JSON.stringify({ ...grokConfiguration(), probe: await probeGrok(), queue: await reviewQueueStatus() }) }] };
+    const grokPr = /^GROK_REVIEW: ([1-9][0-9]{0,6})$/.exec(task.trim());
+    if (grokPr) return { content: [{ type: "text", text: JSON.stringify(await enqueueReview({ repository: "comfortfood34-glitch/soyzas", pr_number: Number(grokPr[1]), publish: true })) }] };
+
     if (!create_new_session) {
       // Legacy ChatGPT installations still expose the old two-tool MCP schema.
       // Explicit project label prevents accidental routing into an unrelated session.
@@ -170,6 +175,7 @@ Use status "error" se não conseguir concluir. Faça essa chamada apenas uma vez
     inputSchema: { job_id: z.string().uuid() }
   }, async ({ job_id }) => {
     const job = await getJob(job_id);
+    if (!job) { const review = await getReviewJob(job_id).catch(() => null); if (review) return { content: [{ type: "text", text: JSON.stringify(review) }] }; }
     if (!job) return { content: [{ type: "text", text: "Tarefa não encontrada ou expirada. Os resultados ficam disponíveis por 24 horas." }] };
     if (job.status === "running") return { content: [{ type: "text", text: `Tarefa enfileirada ou aguardando resposta do Claude.\nSessão: ${job.sessionUrl ?? "iniciando"}` }] };
     return { content: [{ type: "text", text: `Status: ${job.status}\nSessão: ${job.sessionUrl ?? "indisponível"}\n\nResposta do Claude Code:\n${job.result ?? "Sem relatório."}` }] };

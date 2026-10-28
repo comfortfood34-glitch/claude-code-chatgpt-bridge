@@ -57,6 +57,16 @@ export async function getReviewJob(id: string): Promise<ReviewJob | null> {
   }
   return job;
 }
+export async function reviewQueueStatus() {
+  const db = await redis();
+  const jobs = [];
+  for await (const k of db.scanIterator({ MATCH: "bridge:grok:job:*", COUNT: 100 })) {
+    const job = await getReviewJob(k.slice("bridge:grok:job:".length));
+    if (job) jobs.push({ id: job.id, pr: job.input.pr_number, state: job.state, created_at: job.created_at, updated_at: job.updated_at, error: job.error ?? null, sha: job.result?.sha ?? null, published: job.result?.published ?? false });
+    if (jobs.length >= 100) break;
+  }
+  return { pending: await db.lLen("bridge:grok:pending"), worker_lease_seconds: await db.ttl("bridge:grok:worker"), jobs: jobs.sort((a,b) => b.created_at.localeCompare(a.created_at)) };
+}
 let active = false;
 async function tick() {
   if (active || !process.env.REDIS_URL || !process.env.XAI_API_KEY || !process.env.GROK_GITHUB_TOKEN) return;
