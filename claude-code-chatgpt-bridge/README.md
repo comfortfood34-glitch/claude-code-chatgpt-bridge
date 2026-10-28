@@ -83,3 +83,34 @@ O conector usa esse mecanismo com `spawn` sem shell, recebe a mensagem por stdin
 - A API pública de rotina não oferece continuação; a ponte precisa do CLI autenticado. Não tente simular isso reenviando a rotina.
 - Um callback depende da execução do Claude na sessão existente; o comando de envio apenas comprova que o complemento foi aceito para a fila.
 - Projetos novos precisam de uma conversa criada e de registro explícito do ID no Render. Isso evita conversas duplicadas por acidente.
+
+
+## 5. Mac Relay — a mesma sessão Claude, sem OAuth remoto no Render
+
+A API de rotina sempre inicia sessão nova; o CLI no Render não consegue continuar cloud sessions usando apenas o token de \`claude setup-token\`. O login completo de \`claude auth login\` no Mac **já foi validado** para enviar à sessão existente usando \`claude -p --cloud cse_...\`.
+
+Esta integração permite que o ChatGPT envie uma mensagem autenticada ao MCP, o Render a guarde no Redis, e um processo local do Mac faça polling HTTPS autenticado para encaminhar a mensagem à conversa **já existente** do Claude Code. **O Mac inicia todas as conexões; nenhum SSH ou porta pública é necessário.**
+
+### Parâmetros
+
+- \`REDIS_URL\` existente é obrigatório (fila persistente nos redeploys).
+- \`CLAUDE_MAC_RELAY_TOKEN\`: token independente de alta entropia. Não usar \`CLAUDE_CODE_OAUTH_TOKEN\` nem \`BRIDGE_ACCESS_TOKEN\` aqui.
+- \`CLAUDE_PROJECT_SESSIONS\`: JSON de projeto -> ID da conversa existente. O relay do ZAS valida o ID exato na configuração do Mac.
+
+### Endpoints somente para dispositivo autenticado
+
+- \`GET /relay/next\`: entrega no máximo uma mensagem da fila, sem retry automático se a entrega ficar incerta.
+- \`POST /relay/ack\`: registra entrega aceita ou erro seguro \`claude_relay_*\`.
+- \`GET /relay/status\`: estado da conexão recente do dispositivo.
+
+A autenticação usa Bearer \`CLAUDE_MAC_RELAY_TOKEN\` com comparação de tempo constante. Falha fechada se a variável estiver ausente. Nenhuma mensagem cria sessão nova e a mesma sessão é conferida no dispositivo.
+
+A conexão Mac é feita pelo instalador do usuário (LaunchAgent do macOS), aproveitando seu login pré-existente do Claude Code CLI. O instalador e o arquivo \`relay-config.json\` individual **não devem ser enviados ao GitHub**: o arquivo contém a credencial do dispositivo. Use sempre um pacote distribuído de forma privada.
+
+### Comportamento
+
+- Quando \`CLAUDE_MAC_RELAY_TOKEN\` está definido, os dois caminhos de continuação (\`continue_claude_code_session\` e compatibilidade \`send_to_claude_code\` com \`PROJECT: zas\`) **enfileiram** a mensagem no Redis, retornando job ID imediatamente. Não afirmam que Claude recebeu enquanto Mac não confirmar.
+- O Mac envia com \`claude -p --cloud <existing-id>\` pela conta já autenticada, e confirma no servidor; \`get_claude_code_result\` passa a \`sent\`, aguardando callback de resultado.
+- Mac desligado/offline: fila fica pendente; a próxima inicialização pode retomar. Se um processo for interrompido **depois** de retirar o job da fila, ele não é repetido automaticamente para evitar duplicações.
+- Os relatórios de Claude ainda dependem da instrução de callback e podem ser consultados pela aba do Chrome se o callback faltar.
+- A máquina precisa estar ligada e conectada; agentes podem continuar a pedir aprovações próprias da Anthropic para ações sensíveis.
