@@ -44,8 +44,9 @@ function mcpServer() {
   server.registerTool("send_to_claude_code", {
     title: "Enviar tarefa ao Claude Code",
     description: "ATENÇÃO: inicia uma sessão NOVA. Para continuar o trabalho do projeto na MESMA conversa, use continue_claude_code_session; só use esta ferramenta quando o usuário pedir expressamente uma nova sessão.",
-    inputSchema: { task: z.string().min(1).max(65_536), mode: z.enum(["read_only", "implementation"]).default("read_only") }
-  }, async ({ task, mode }) => {
+    inputSchema: { task: z.string().min(1).max(65_536), mode: z.enum(["read_only", "implementation"]).default("read_only"), create_new_session: z.boolean().default(false) }
+  }, async ({ task, mode, create_new_session }) => {
+    if (!create_new_session) throw new Error("new_session_requires_explicit_opt_in: use continue_claude_code_session for follow-ups.");
     const rule = mode === "read_only"
       ? "MODO OBRIGATÓRIO: somente leitura. Não edite, não faça commit ou deploy e não altere dados.\n\n"
       : "MODO IMPLEMENTAÇÃO: não faça deploy nem altere produção. Apresente diff e testes para revisão.\n\n";
