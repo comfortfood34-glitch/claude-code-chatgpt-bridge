@@ -4,10 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node --test dist/*.test.js && npm install --no-save --package-lock=false @anthropic-ai/claude-code@2.1.312",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "test": "npm run build && node --test dist/index.test.js"
+    "test": "tsc && node --test dist/*.test.js"
   },
   "engines": {
     "node": ">=20"

@@ -8,7 +8,7 @@ Servidor MCP privado que permite ao ChatGPT iniciar uma sessão real do Claude C
 - A URL de destino é restrita ao endpoint oficial `api.anthropic.com` para impedir chamadas arbitrárias.
 - O modo padrão é somente leitura.
 - A rotina deve ser configurada sem deploy automático e sem alterações em produção.
-- Cada solicitação cria uma nova sessão do Claude Code, retorna seu link e um código de acompanhamento.
+- A rotina cria uma sessão nova somente após autorização explícita; complementos de projeto usam uma conversa já existente.
 - Ao terminar, o Claude envia o relatório à ponte por um callback assinado e temporário.
 
 ## 1. Criar a rotina no Claude Code
@@ -47,3 +47,37 @@ O plugin expõe `send_to_claude_code`, com os modos `read_only` e `implementatio
 ## Funcionamento do retorno
 
 A API experimental de Rotinas inicia a sessão, mas não transmite sua saída. Por isso, a ponte inclui no prompt um callback assinado. Quando o Claude termina, publica o relatório nesse callback. O ChatGPT consulta o resultado usando o código de acompanhamento. Resultados ficam em memória por 24 horas; uma reinicialização do serviço gratuito do Render pode removê-los.
+
+
+## 4. Conversas persistentes por projeto (sem abrir nova rotina)
+
+**Use `continue_claude_code_session` quando o usuário pedir um complemento.**
+A ferramenta antiga `send_to_claude_code` usa a API de rotinas e **sempre cria uma nova sessão**; agora exige `create_new_session:true` explícito. Para continuar projetos, use sempre a nova ferramenta.
+
+O CLI oficial do Claude Code permite enviar um complemento à sessão em nuvem existente com:
+
+```bash
+claude -p "Mensagem adicional" --cloud cse_SESSAO_EXISTENTE
+```
+
+O conector usa esse mecanismo com `spawn` sem shell, recebe a mensagem por stdin, valida IDs e nunca abre uma sessão alternativa em caso de erro. O complemento inclui um callback assinado para que `get_claude_code_result` acompanhe o resultado do mesmo chat.
+
+### Configuração no Render
+
+1. Em **Environment**, defina `CLAUDE_PROJECT_SESSIONS` como um JSON com os projetos e os IDs das conversas já existentes, por exemplo:
+   `{"zas":"cse_SESSAO_EXISTENTE","kaisosystem":"cse_OUTRA_SESSAO"}`.
+   IDs inválidos e projetos não cadastrados são rejeitados: **não há fallback para criar uma nova sessão**.
+2. Instale o Claude Code CLI no build: o comando `npm run build` executa `tsc`, os testes Node e instala uma versão fixada do CLI em `node_modules/.bin/claude`. O servidor usa o CLI no `PATH` do script `yarn start`.
+3. Autentique o CLI na **mesma conta claude.ai que possui essas sessões**. O token de rotina `CLAUDE_ROUTINE_TOKEN` **não serve** para este fluxo. Para ambiente automatizado, o CLI aceita `CLAUDE_CODE_OAUTH_TOKEN`. Gere-o com o procedimento oficial `claude setup-token` num terminal confiável, quando disponível na sua conta, e defina-o **somente** no painel secreto do Render. Não envie tokens por chat, não adicione a GitHub e não registre em logs.
+4. Consulte `get_claude_project_sessions`. Ele informa as sessões fixas e se a credencial do CLI está configurada, mas **não testa autenticação nem envia mensagens**.
+5. Envie um complemento com `continue_claude_code_session` e `project:"zas"`; confira que a resposta aponta para o mesmo ID. O CLI retorna assim que enfileira a mensagem e não espera sua conclusão; o relatório chega depois pelo callback.
+6. Se o OAuth expirar, ou a sessão for arquivada, a ferramenta retorna erro. Resolva a autenticação ou escolha conscientemente outra sessão; ela **não cria uma conversa nova automaticamente**.
+
+**Acesso e segurança:** ChatGPT deve controlar as tarefas. O comando não usa `shell:true`, não retorna saída bruta do CLI e só envia mensagens para IDs cadastrados na variável do servidor. A autenticação da conta é mais ampla que o token limitado de uma rotina, portanto o token deve ser tratado como segredo de alto privilégio. A publicação no Render não deve ser feita antes de revisar os testes e provisionar a credencial de forma segura.
+
+### Limites atuais
+
+- O CLI pode exigir reautorização periódica; não é garantido que um token funcione indefinidamente.
+- A API pública de rotina não oferece continuação; a ponte precisa do CLI autenticado. Não tente simular isso reenviando a rotina.
+- Um callback depende da execução do Claude na sessão existente; o comando de envio apenas comprova que o complemento foi aceito para a fila.
+- Projetos novos precisam de uma conversa criada e de registro explícito do ID no Render. Isso evita conversas duplicadas por acidente.
