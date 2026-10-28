@@ -31,6 +31,13 @@ export function parseProjectSessions(raw: string | undefined): Record<string, st
   return result;
 }
 
+/** Explicit compatibility envelope for old ChatGPT connectors whose tool schema is cached. */
+export function parseFollowupTask(value: string): { project: string; task: string } {
+  const match = /^PROJECT:[ \t]*([a-z][a-z0-9_-]{0,47})[ \t]*\r?\n([\s\S]+)$/i.exec(value);
+  if (!match || !match[2].trim()) throw new Error("existing_session_requires_project_prefix");
+  return { project: match[1].toLowerCase(), task: match[2] };
+}
+
 export function projectSessionId(project: string, raw = process.env.CLAUDE_PROJECT_SESSIONS): string {
   if (!PROJECT_ID.test(project)) throw new Error("invalid_project");
   const sessionId = parseProjectSessions(raw)[project];
