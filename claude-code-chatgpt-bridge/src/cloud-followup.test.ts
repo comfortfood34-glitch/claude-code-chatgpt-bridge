@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  cloudFollowupReady, parseProjectSessions, projectSessionId,
+  cloudFollowupReady, parseFollowupTask, parseProjectSessions, projectSessionId,
   queueCloudFollowup, validateCloudSessionId
 } from "./cloud-followup.js";
 
@@ -50,4 +50,16 @@ test("invalid payload is rejected before any executor call", async () => {
 test("CLI credentials are separate from the routine token", () => {
   assert.equal(cloudFollowupReady({ CLAUDE_ROUTINE_TOKEN: "routine-secret" }), false);
   assert.equal(cloudFollowupReady({ CLAUDE_CODE_OAUTH_TOKEN: "oauth-token" }), true);
+});
+
+test("legacy project envelope explicitly binds follow-up to ZAS without a new session", () => {
+  const result = parseFollowupTask("PROJECT: zas\nConfira os testes em leitura");
+  assert.deepEqual(result, { project: "zas", task: "Confira os testes em leitura" });
+  assert.equal(projectSessionId(result.project, configured), ZAS_SESSION);
+});
+
+test("legacy project envelope refuses ambiguous or missing routing", () => {
+  for (const value of ["Confira status do ZAS", "PROJECT: zas", "PROJECT: ../zas\nx", "PROJECT: test\n "]) {
+    assert.throws(() => parseFollowupTask(value), /existing_session_requires_project_prefix/);
+  }
 });
