@@ -95,12 +95,12 @@ async function tick() {
       const job = JSON.parse(claimed) as ReviewJob;
       const id = job.id;
       const heartbeat = setInterval(() => {
+        // Renew only TTLs: Lua cjson re-encoding would turn empty JSON arrays into objects.
         void db.eval(`if redis.call('GET',KEYS[1]) ~= ARGV[1] then return 0 end
           redis.call('EXPIRE',KEYS[1],120)
-          local raw = redis.call('GET',KEYS[2])
-          if raw then local j = cjson.decode(raw)
-            if j.state == 'running' then j.updated_at = ARGV[2]; redis.call('SET',KEYS[2],cjson.encode(j),'EX',ARGV[3]) end end
-          return 1`, { keys: ["bridge:grok:worker", key(id)], arguments: [lease, new Date().toISOString(), String(TTL)] })
+          redis.call('EXPIRE',KEYS[2],ARGV[2]); return 1`, {
+            keys: ["bridge:grok:worker", key(id)], arguments: [lease, String(TTL)]
+          })
           .catch(() => console.error(JSON.stringify({ event: "grok_heartbeat_failed", job_id: id })));
       }, 30_000);
       heartbeat.unref();

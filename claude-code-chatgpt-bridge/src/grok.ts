@@ -60,7 +60,7 @@ export async function logGrokReadiness() {
   console.log(JSON.stringify({ event: "grok_readiness", ...grokConfiguration(), xai_probe: await probeGrok(), github_probe: githubCode }));
 }
 
-export type ReviewProgress = { sha: string; stage: string; total: number; completed: number; chunk_results: z.infer<typeof Verdict>[] };
+export type ReviewProgress = { sha: string; stage: string; total: number; completed: number; chunk_results: z.infer<typeof Verdict>[]; report?: string };
 export async function reviewPull(input: ReviewInput, net: Net = fetch, progress: (p: ReviewProgress) => Promise<void> = async () => {}) {
   ReviewRequest.parse(input);
   if (!process.env.XAI_API_KEY) throw new Error("xai_key_missing");
@@ -82,7 +82,7 @@ export async function reviewPull(input: ReviewInput, net: Net = fetch, progress:
   });
   if (!diffs.length) throw new Error("no_reviewable_diff");
   const groups = splitDiffs(diffs), verdicts: z.infer<typeof Verdict>[] = [];
-  const checkpoint = async (stage: string) => progress(JSON.parse(redact(JSON.stringify({ sha: pull.head.sha, stage, total: groups.length, completed: verdicts.length, chunk_results: verdicts }))));
+  const checkpoint = async (stage: string, report?: string) => progress(JSON.parse(redact(JSON.stringify({ sha: pull.head.sha, stage, total: groups.length, completed: verdicts.length, chunk_results: verdicts, ...(report ? { report } : {}) }))));
   for (let index = 0; index < groups.length; index++) {
     const latest = Pull.parse(await github(`/pulls/${input.pr_number}`, net));
     if (latest.head.sha !== pull.head.sha || latest.state !== "open") throw new Error("grok_head_changed_during_review");
@@ -102,7 +102,7 @@ export async function reviewPull(input: ReviewInput, net: Net = fetch, progress:
     "### Limitações", "Análise automatizada de diffs, sem execução de testes e sem acesso ao contexto completo. Não autoriza merge ou deploy.",
     ...verdict.limitations, omitted.length ? "Arquivos não analisados: " + omitted.map(p => "`" + p + "`").join(", ") : "Todos os patches retornados pelo GitHub foram incluídos; o GitHub pode omitir conteúdo de patches grandes."
   ].filter(Boolean).join("\n\n")).slice(0, 55_000);
-  await checkpoint("publishing_report");
+  await checkpoint("publishing_report", report);
   if (input.publish && !stale) await github(`/issues/${input.pr_number}/comments`, net, { method: "POST", body: JSON.stringify({ body: report }) });
   return { sha: pull.head.sha, stale, published: input.publish && !stale, report };
 }

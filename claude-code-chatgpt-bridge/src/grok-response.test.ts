@@ -43,3 +43,21 @@ test("completed chunks are checkpointed before a later failure; no incomplete re
   assert.equal(checkpoints.at(-1)?.chunk_results[0].summary, verdict.summary);
   assert.equal(comments, 0);
 });
+
+
+test("publication denial preserves the final report checkpoint without another inference", async () => {
+  let calls = 0;
+  let saved: ReviewProgress | undefined;
+  const net: typeof fetch = async url => {
+    const u = String(url);
+    if (u.includes("/files?")) return Response.json([{ filename: "f.ts", status: "modified", changes: 1, patch: "+x" }]);
+    if (u.includes("api.x.ai")) { calls++; return Response.json(completion); }
+    if (u.endsWith("/comments")) return new Response("private provider response", { status: 403 });
+    return Response.json({ number: 955, state: "open", title: "PR", head: { sha: "a".repeat(40) } });
+  };
+  await assert.rejects(reviewPull({ repository: REVIEW_REPO, pr_number: 955, publish: true }, net, async p => { saved = p; }), /github_http_403/);
+  assert.equal(calls, 1);
+  assert.equal(saved?.stage, "publishing_report");
+  assert.ok(saved?.report?.includes("Grok"));
+  assert.ok(saved?.report?.includes("Bloco revisado"));
+});
