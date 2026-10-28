@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { createClient } from "redis";
-import { REVIEW_REPO, ReviewRequest, reviewPull, listOpenReviewTargets, type ReviewInput } from "./grok.js";
+import { REVIEW_REPO, ReviewRequest, reviewPull, listOpenReviewTargets, type ReviewInput, type ReviewProgress } from "./grok.js";
 
-type ReviewJob = { id: string; input: ReviewInput; state: "queued" | "running" | "completed" | "error"; created_at: string; updated_at: string; result?: Awaited<ReturnType<typeof reviewPull>>; error?: string };
+type ReviewJob = { id: string; input: ReviewInput; state: "queued" | "running" | "completed" | "error"; created_at: string; updated_at: string; result?: Awaited<ReturnType<typeof reviewPull>>; error?: string; progress?: ReviewProgress };
 let connection: ReturnType<typeof createClient> | undefined;
 let ready: Promise<unknown> | undefined;
 async function redis() {
@@ -21,6 +21,8 @@ export function queueReceipt(result: unknown) {
     : { job_id: String(result), state: "queued" };
 }
 export function safeReviewError(error: unknown) {
+  if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) return "github_request_timeout";
+  if (error instanceof TypeError) return "github_network_error";
   const message = error instanceof Error ? error.message : "";
   return /^(?:(?:xai_|github_|grok_|pull_request_)[a-z0-9_]+|no_reviewable_diff)$/.test(message) ? message : "review_failed_no_automatic_retry";
 }
@@ -34,7 +36,8 @@ export async function enqueueReview(input: ReviewInput, delivery: string = rando
   const id = randomUUID(), now = new Date().toISOString();
   const job: ReviewJob = { id, input, state: "queued", created_at: now, updated_at: now };
   // Atomic delivery deduplication + storage + enqueue. No acknowledged job exists only in memory.
-  const result = await db.eval(`if redis.call('EXISTS',KEYS[1]) == 1 then return redis.call('GET',KEYS[1]) end
+  const result = await db.eval(`local prior = redis.call('GET',KEYS[1])
+    if prior and not (prior == 'budget_limit' and ARGV[5] == 'poll') then return prior end
     local count = tonumber(redis.call('GET',KEYS[4]) or '0')
     if count >= tonumber(ARGV[4]) then redis.call('SET',KEYS[1],'budget_limit','EX',ARGV[3]); return 'budget_limit' end
     redis.call('INCR',KEYS[4]); redis.call('EXPIRE',KEYS[4],172800)
@@ -42,7 +45,7 @@ export async function enqueueReview(input: ReviewInput, delivery: string = rando
     redis.call('SET',KEYS[2],ARGV[2],'EX',ARGV[3])
     redis.call('RPUSH',KEYS[3],ARGV[1]); return ARGV[1]`, {
     keys: ["bridge:grok:delivery:" + delivery, key(id), "bridge:grok:pending", "bridge:grok:budget:" + now.slice(0, 10)],
-    arguments: [id, JSON.stringify(job), String(TTL), String(Math.min(100, Math.max(1, Number(process.env.GROK_MAX_REVIEWS_PER_DAY) || 20)))]
+    arguments: [id, JSON.stringify(job), String(TTL), String(Math.min(100, Math.max(1, Number(process.env.GROK_MAX_REVIEWS_PER_DAY) || 20))), delivery.startsWith("poll-") ? "poll" : "webhook"]
   });
   return queueReceipt(result);
 }
@@ -51,7 +54,7 @@ export async function getReviewJob(id: string): Promise<ReviewJob | null> {
   const db = await redis(), raw = await db.get(key(id));
   if (!raw) return null;
   const job = JSON.parse(raw) as ReviewJob;
-  if (job.state === "running" && Date.now() - Date.parse(job.updated_at) > 10 * 60_000) {
+  if (job.state === "running" && Date.now() - Date.parse(job.updated_at) > 20 * 60_000) {
     job.state = "error"; job.error = "worker_interrupted_or_timed_out_no_automatic_retry";
     await db.set(key(id), JSON.stringify(job), { EX: TTL });
   }
@@ -62,7 +65,7 @@ export async function reviewQueueStatus() {
   const jobs = [];
   for await (const k of db.scanIterator({ MATCH: "bridge:grok:job:*", COUNT: 100 })) {
     const job = await getReviewJob(k.slice("bridge:grok:job:".length));
-    if (job) jobs.push({ id: job.id, pr: job.input.pr_number, state: job.state, created_at: job.created_at, updated_at: job.updated_at, error: job.error ?? null, sha: job.result?.sha ?? null, published: job.result?.published ?? false });
+    if (job) jobs.push({ id: job.id, pr: job.input.pr_number, state: job.state, created_at: job.created_at, updated_at: job.updated_at, error: job.error ?? null, sha: job.result?.sha ?? null, published: job.result?.published ?? false, stage: job.progress?.stage ?? null, chunks: job.progress ? `${job.progress.completed}/${job.progress.total}` : null });
     if (jobs.length >= 100) break;
   }
   return { pending: await db.lLen("bridge:grok:pending"), worker_lease_seconds: await db.ttl("bridge:grok:worker"), jobs: jobs.sort((a,b) => b.created_at.localeCompare(a.created_at)) };
@@ -74,7 +77,7 @@ async function tick() {
   const lease = randomUUID();
   try {
     const db = await redis();
-    if (!await db.set("bridge:grok:worker", lease, { NX: true, EX: 600 })) return;
+    if (!await db.set("bridge:grok:worker", lease, { NX: true, EX: 120 })) return;
     try {
       const claimed = await db.eval(`local id = redis.call('LPOP',KEYS[1])
         if not id then return nil end
@@ -91,8 +94,25 @@ async function tick() {
       if (typeof claimed !== "string") return;
       const job = JSON.parse(claimed) as ReviewJob;
       const id = job.id;
-      try { job.result = await reviewPull(job.input); job.state = "completed"; }
-      catch (e) { job.state = "error"; job.error = safeReviewError(e); }
+      const heartbeat = setInterval(() => {
+        void db.eval(`if redis.call('GET',KEYS[1]) ~= ARGV[1] then return 0 end
+          redis.call('EXPIRE',KEYS[1],120)
+          local raw = redis.call('GET',KEYS[2])
+          if raw then local j = cjson.decode(raw)
+            if j.state == 'running' then j.updated_at = ARGV[2]; redis.call('SET',KEYS[2],cjson.encode(j),'EX',ARGV[3]) end end
+          return 1`, { keys: ["bridge:grok:worker", key(id)], arguments: [lease, new Date().toISOString(), String(TTL)] })
+          .catch(() => console.error(JSON.stringify({ event: "grok_heartbeat_failed", job_id: id })));
+      }, 30_000);
+      heartbeat.unref();
+      try {
+        job.result = await reviewPull(job.input, fetch, async p => {
+          job.progress = p; job.updated_at = new Date().toISOString();
+          await db.set(key(id), JSON.stringify(job), { EX: TTL });
+          console.log(JSON.stringify({ event: "grok_review_progress", job_id: id, pr: job.input.pr_number, stage: p.stage, completed: p.completed, total: p.total, sha: p.sha }));
+        });
+        job.state = "completed";
+      } catch (e) { job.state = "error"; job.error = safeReviewError(e); }
+      finally { clearInterval(heartbeat); }
       job.updated_at = new Date().toISOString();
       await db.set(key(id), JSON.stringify(job), { EX: TTL });
       console.log(JSON.stringify({ event: "grok_review_finished", job_id: id, pr: job.input.pr_number, state: job.state, sha: job.result?.sha ?? null, published: job.result?.published ?? false, error: job.error ?? null }));
