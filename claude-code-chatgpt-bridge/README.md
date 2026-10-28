@@ -52,6 +52,8 @@ A API experimental de Rotinas inicia a sessão, mas não transmite sua saída. P
 ## 4. Conversas persistentes por projeto (sem abrir nova rotina)
 
 **Use `continue_claude_code_session` quando o usuário pedir um complemento.**
+
+**Compatibilidade com conexões antigas do ChatGPT:** se o cliente ainda só enxergar `send_to_claude_code`, use a tarefa começando por `PROJECT: zas` seguido de uma quebra de linha e a mensagem. A ferramenta antiga encaminha essa mensagem à sessão já cadastrada. Sem prefixo, retorna erro e nunca inicia outra sessão. Criar uma sessão realmente nova exige `create_new_session:true`, disponível somente após atualização da definição da ferramenta no ChatGPT.
 A ferramenta antiga `send_to_claude_code` usa a API de rotinas e **sempre cria uma nova sessão**; agora exige `create_new_session:true` explícito. Para continuar projetos, use sempre a nova ferramenta.
 
 O CLI oficial do Claude Code permite enviar um complemento à sessão em nuvem existente com:
