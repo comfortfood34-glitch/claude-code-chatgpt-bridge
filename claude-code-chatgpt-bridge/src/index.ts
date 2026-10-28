@@ -215,7 +215,7 @@ app.get("/office/jobs/:jobId", async (req, res) => {
 });
 
 function requireMacRelay(req: Request, res: Response): boolean {
-  const bearer = req.header("authorization")?.replace(/^Bearer\\s+/i, "") ?? "";
+  const bearer = req.header("authorization")?.replace(/^Bearer\s+/i, "") ?? "";
   if (authorizedRelayToken(bearer)) return true;
   res.set("Cache-Control", "no-store").status(401).json({ error: "unauthorized" });
   return false;
