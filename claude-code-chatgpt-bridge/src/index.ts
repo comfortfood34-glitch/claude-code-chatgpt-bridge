@@ -47,26 +47,27 @@ function mcpServer() {
     inputSchema: { task: z.string().min(1).max(65_536), mode: z.enum(["read_only", "implementation"]).default("read_only"), create_new_session: z.boolean().default(false) }
   }, async ({ task, mode, create_new_session }) => {
     if (!create_new_session) {
-      // The legacy tool remains available to ChatGPT clients with a cached MCP schema.
-      // PROJECT: <id> at the beginning avoids routing unrelated work to the wrong project.
+      // Legacy ChatGPT installations still expose the old two-tool MCP schema.
+      // Explicit project label prevents accidental routing into an unrelated session.
       const followup = parseFollowupTask(task);
       const sessionId = projectSessionId(followup.project);
       if (!cloudFollowupReady()) throw new Error("claude_cli_auth_missing");
       const { job, callbackToken } = await createJob();
       await attachSession(job.id, sessionId, "https://claude.ai/code/" + sessionId);
-      const publicUrl = (process.env.BRIDGE_PUBLIC_URL ?? "https://claude-code-chatgpt-bridge.onrender.com").replace(/\\/$/, "");
+      const publicUrl = (process.env.BRIDGE_PUBLIC_URL ?? "https://claude-code-chatgpt-bridge.onrender.com").replace(/\/$/, "");
       const rule = mode === "read_only"
         ? "MODO SOMENTE LEITURA: não modifique arquivos, commits ou dados."
         : "MODO IMPLEMENTAÇÃO: alterações só no repositório desta sessão. Sem publicação, deploy ou pagamento LIVE.";
-      const callback = "\\n\\nRETORNO OBRIGATÓRIO: ao terminar esta tarefa, envie HTTP POST para " +
-        publicUrl + "/callbacks/claude/" + job.id + " com JSON {\\\"token\\\":\\\"" + callbackToken +
-        "\\\",\\\"status\\\":\\\"completed\\\",\\\"result\\\":\\\"RELATÓRIO FINAL COMPLETO\\\"}. Não exponha tokens. Não crie outra sessão.";
+      const callback = "\n\nRETORNO OBRIGATÓRIO: ao terminar esta tarefa, envie HTTP POST para " +
+        publicUrl + "/callbacks/claude/" + job.id + " com JSON " +
+        JSON.stringify({ token: callbackToken, status: "completed", result: "RELATÓRIO FINAL COMPLETO" }) +
+        ". Não exponha tokens. Não crie outra sessão.";
       try {
-        await queueCloudFollowup(sessionId, rule + "\\n\\n" + followup.task + callback);
+        await queueCloudFollowup(sessionId, rule + "\n\n" + followup.task + callback);
         return { content: [{ type: "text", text: "Mensagem enviada à conversa EXISTENTE do projeto " +
-          followup.project + ". Nenhuma sessão nova criada.\\nCódigo de acompanhamento: " +
-          job.id + "\\nSessão: https://claude.ai/code/" + sessionId +
-          "\\nConsulte get_claude_code_result para receber o relatório." }] };
+          followup.project + ". Nenhuma sessão nova criada.\nCódigo de acompanhamento: " +
+          job.id + "\nSessão: https://claude.ai/code/" + sessionId +
+          "\nConsulte get_claude_code_result para receber o relatório." }] };
       } catch (error) {
         await failJob(job.id, error instanceof Error ? error.message : "Falha ao enviar complemento");
         throw error;
