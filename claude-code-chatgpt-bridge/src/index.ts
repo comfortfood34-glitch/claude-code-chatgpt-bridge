@@ -5,7 +5,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 import { fireClaudeRoutine } from "./claude.js";
 import { cloudFollowupReady, parseFollowupTask, parseProjectSessions, projectSessionId, queueCloudFollowup } from "./cloud-followup.js";
-import { attachSession, completeJob, createJob, failJob, getJob } from "./jobs.js";
+import { attachSession, completeJob, createJob, failJob, getJob, markJobSent } from "./jobs.js";
+import { ackMacFollowup, authorizedRelayToken, claimMacFollowup, enqueueMacFollowup, readMacRelayState } from "./mac-relay.js";
 
 const app = express();
 app.disable("x-powered-by"); app.set("trust proxy", 1);
@@ -51,7 +52,7 @@ function mcpServer() {
       // Explicit project label prevents accidental routing into an unrelated session.
       const followup = parseFollowupTask(task);
       const sessionId = projectSessionId(followup.project);
-      if (!cloudFollowupReady()) throw new Error("claude_cli_auth_missing");
+      if (!process.env.CLAUDE_MAC_RELAY_TOKEN && !cloudFollowupReady()) throw new Error("claude_delivery_not_configured");
       const { job, callbackToken } = await createJob();
       await attachSession(job.id, sessionId, "https://claude.ai/code/" + sessionId);
       const publicUrl = (process.env.BRIDGE_PUBLIC_URL ?? "https://claude-code-chatgpt-bridge.onrender.com").replace(/\/$/, "");
@@ -63,8 +64,9 @@ function mcpServer() {
         JSON.stringify({ token: callbackToken, status: "completed", result: "RELATÓRIO FINAL COMPLETO" }) +
         ". Não exponha tokens. Não crie outra sessão.";
       try {
-        await queueCloudFollowup(sessionId, rule + "\n\n" + followup.task + callback);
-        return { content: [{ type: "text", text: "Mensagem enviada à conversa EXISTENTE do projeto " +
+        if (process.env.CLAUDE_MAC_RELAY_TOKEN) await enqueueMacFollowup(job.id, sessionId, rule + "\n\n" + followup.task + callback);
+        else await queueCloudFollowup(sessionId, rule + "\n\n" + followup.task + callback);
+        return { content: [{ type: "text", text: "Mensagem enfileirada para envio à conversa EXISTENTE do projeto " +
           followup.project + ". Nenhuma sessão nova criada.\nCódigo de acompanhamento: " +
           job.id + "\nSessão: https://claude.ai/code/" + sessionId +
           "\nConsulte get_claude_code_result para receber o relatório." }] };
@@ -106,6 +108,7 @@ Use status "error" se não conseguir concluir. Faça essa chamada apenas uma vez
         project, session_id, url: "https://claude.ai/code/" + session_id
       })),
       cli_oauth_configured: cloudFollowupReady(),
+      relay: await readMacRelayState().catch(() => ({enabled:true,active:false,lastSeen:null})),
       note: "Sessões persistentes não são criadas automaticamente."
     }) }] };
   });
@@ -119,8 +122,8 @@ Use status "error" se não conseguir concluir. Faça essa chamada apenas uma vez
     }
   }, async ({ project, task, mode }) => {
     const sessionId = projectSessionId(project);
-    if (!cloudFollowupReady()) {
-      throw new Error("claude_cli_auth_missing: é necessário autenticar o CLI do Claude no servidor; o token da rotina API não serve para continuar sessões.");
+    if (!process.env.CLAUDE_MAC_RELAY_TOKEN && !cloudFollowupReady()) {
+      throw new Error("claude_delivery_not_configured");
     }
     const { job, callbackToken } = await createJob();
     await attachSession(job.id, sessionId, "https://claude.ai/code/" + sessionId);
@@ -132,9 +135,10 @@ Use status "error" se não conseguir concluir. Faça essa chamada apenas uma vez
       publicUrl + "/callbacks/claude/" + job.id + " com JSON {\"token\":\"" + callbackToken +
       "\",\"status\":\"completed\",\"result\":\"RELATÓRIO FINAL COMPLETO\"}. Use status error se falhar. Não exponha tokens no relatório. Não inicie outra sessão.";
     try {
-      await queueCloudFollowup(sessionId, rule + "\n\n" + task + callback);
+      if (process.env.CLAUDE_MAC_RELAY_TOKEN) await enqueueMacFollowup(job.id, sessionId, rule + "\n\n" + task + callback);
+      else await queueCloudFollowup(sessionId, rule + "\n\n" + task + callback);
       return { content: [{ type: "text", text:
-        "Mensagem adicionada à sessão EXISTENTE do projeto " + project +
+        "Mensagem enfileirada para sessão EXISTENTE do projeto " + project +
         ". Nenhuma sessão nova foi criada.\nCódigo de acompanhamento: " + job.id +
         "\nSessão: https://claude.ai/code/" + sessionId +
         "\nAcompanhe via get_claude_code_result."
@@ -151,7 +155,7 @@ Use status "error" se não conseguir concluir. Faça essa chamada apenas uma vez
   }, async ({ job_id }) => {
     const job = await getJob(job_id);
     if (!job) return { content: [{ type: "text", text: "Tarefa não encontrada ou expirada. Os resultados ficam disponíveis por 24 horas." }] };
-    if (job.status === "running") return { content: [{ type: "text", text: `Claude Code ainda está trabalhando. Consulte novamente em alguns minutos.\nSessão: ${job.sessionUrl ?? "iniciando"}` }] };
+    if (job.status === "running") return { content: [{ type: "text", text: `Tarefa enfileirada ou aguardando resposta do Claude.\nSessão: ${job.sessionUrl ?? "iniciando"}` }] };
     return { content: [{ type: "text", text: `Status: ${job.status}\nSessão: ${job.sessionUrl ?? "indisponível"}\n\nResposta do Claude Code:\n${job.result ?? "Sem relatório."}` }] };
   });
   return server;
@@ -210,6 +214,44 @@ app.get("/office/jobs/:jobId", async (req, res) => {
   } catch { res.status(503).json({ error: "job_storage_unavailable" }); }
 });
 
+function requireMacRelay(req: Request, res: Response): boolean {
+  const bearer = req.header("authorization")?.replace(/^Bearer\s+/i, "") ?? "";
+  if (authorizedRelayToken(bearer)) return true;
+  res.set("Cache-Control", "no-store").status(401).json({ error: "unauthorized" });
+  return false;
+}
+// Pull-only: Mac initiates every connection. Claude login stays on the Mac.
+app.get("/relay/next", async (req, res) => {
+  if (!requireMacRelay(req, res)) return;
+  try {
+    const job = await claimMacFollowup();
+    res.set("Cache-Control", "no-store");
+    if (!job) { res.status(204).end(); return; }
+    res.status(200).json({ job_id: job.id, session_id: job.sessionId, task: job.message });
+  } catch { res.status(503).json({ error: "relay_storage_unavailable" }); }
+});
+app.post("/relay/ack", async (req, res) => {
+  if (!requireMacRelay(req, res)) return;
+  const parsed = z.object({
+    job_id: z.string().uuid(),
+    ok: z.boolean(),
+    error: z.string().max(90).optional()
+  }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: "invalid_ack" }); return; }
+  try {
+    const { job_id, ok, error } = parsed.data;
+    const state = await ackMacFollowup(job_id, ok, error);
+    if (state === "ignored") { res.status(409).json({ error: "unknown_or_unclaimed_task" }); return; }
+    if (state === "sent") await markJobSent(job_id);
+    else await failJob(job_id, /^claude_relay_[a-z0-9_]{1,60}$/.test(error ?? "") ? error! : "claude_relay_dispatch_error");
+    res.set("Cache-Control", "no-store").json({ state });
+  } catch { res.status(503).json({ error: "relay_storage_unavailable" }); }
+});
+app.get("/relay/status", async (req, res) => {
+  if (!requireMacRelay(req, res)) return;
+  try { res.set("Cache-Control", "no-store").json(await readMacRelayState()); }
+  catch { res.status(503).json({ error: "relay_storage_unavailable" }); }
+});
 app.get("/health", (_req, res) => res.json({ status: "ok", service: "claude-code-chatgpt-bridge" }));
 app.post("/callbacks/claude/:jobId", async (req, res) => {
   const parsed = z.object({
