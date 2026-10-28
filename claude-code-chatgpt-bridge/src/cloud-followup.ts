@@ -74,7 +74,11 @@ export function classifyClaudeCliFailure(output: string, code: number | null): s
   if (/session not found|does not match a session|not authorized to access.*session/i.test(output)) return "claude_cli_session_not_found_or_access_denied";
   if (/archived and cannot accept|session.*archived/i.test(output)) return "claude_cli_session_archived";
   if (/authenticate|authentication|not logged in|unauthorized|access token|expired token|invalid token|auth login|401\b/i.test(output)) return "claude_cli_auth_rejected";
-  if (/cloud sessions aren't available|not enabled for your account|organization.s policy/i.test(output)) return "claude_cli_cloud_unavailable";
+  if (/cloud sessions aren't available with\s+/i.test(output)) return "claude_cli_unsupported_provider";
+  if (/cloud sessions are disabled by your organization.s policy/i.test(output)) return "claude_cli_org_policy_disabled";
+  if (/couldn.t verify your organization.s policy/i.test(output)) return "claude_cli_org_policy_not_verified";
+  if (/cloud sessions aren't available:|not enabled for your account/i.test(output)) return "claude_cli_cloud_policy_or_credential";
+  if (/organization.s policy/i.test(output)) return "claude_cli_org_policy_error";
   if (/unknown option|unknown argument|--cloud.*not recognized|unrecognized option/i.test(output)) return "claude_cli_unsupported_flags";
   if (/network|connection|timeout|ETIMEDOUT|ECONNRESET|fetch failed/i.test(output)) return "claude_cli_network_error";
   return "claude_cli_send_failed_exit_" + (code === null ? "signal" : String(code));
