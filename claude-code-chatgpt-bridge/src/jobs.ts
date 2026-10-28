@@ -1,7 +1,7 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { createClient, type RedisClientType } from "redis";
 
-export type JobStatus = "running" | "completed" | "error" | "timeout";
+export type JobStatus = "running" | "sent" | "completed" | "error" | "timeout";
 export type ClaudeJob = {
   id: string;
   status: JobStatus;
@@ -98,6 +98,15 @@ export async function attachSession(jobId: string, sessionId: string, sessionUrl
   if (!job) return;
   job.sessionId = sessionId;
   job.sessionUrl = sessionUrl;
+  job.updatedAt = new Date().toISOString();
+  await store.set(job);
+}
+
+export async function markJobSent(jobId: string): Promise<void> {
+  const job = await store.get(jobId);
+  if (!job || job.status !== "running") return;
+  job.status = "sent";
+  job.result = "Mensagem enviada à sessão existente. Aguardando resposta ou callback do Claude.";
   job.updatedAt = new Date().toISOString();
   await store.set(job);
 }
