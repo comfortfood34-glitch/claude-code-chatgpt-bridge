@@ -1,5 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
-import { createClient, type RedisClientType } from "redis";
+import { createClient } from "redis";
 import { validateCloudSessionId } from "./cloud-followup.js";
 
 export type RelayTask = {
@@ -14,12 +14,13 @@ export type RelayTask = {
 const QUEUE = "bridge:mac-relay:queue";
 const LAST_SEEN = "bridge:mac-relay:last-seen";
 const TTL_SECONDS = 7 * 24 * 3600;
-let client: RedisClientType | undefined;
+type MacRedisClient = ReturnType<typeof createClient>;
+let client: MacRedisClient | undefined;
 let pending: Promise<unknown> | undefined;
 
 function taskKey(id: string): string { return "bridge:mac-relay:task:" + id; }
 
-async function redis(): Promise<RedisClientType> {
+async function redis(): Promise<MacRedisClient> {
   if (!process.env.REDIS_URL) throw new Error("mac_relay_requires_redis");
   if (!client) {
     const instance = createClient({ url: process.env.REDIS_URL });
@@ -28,7 +29,7 @@ async function redis(): Promise<RedisClientType> {
     pending = instance.connect();
   }
   await pending;
-  return client;
+  return client!;
 }
 
 export function authorizedRelayToken(provided: string, configured = process.env.CLAUDE_MAC_RELAY_TOKEN): boolean {
