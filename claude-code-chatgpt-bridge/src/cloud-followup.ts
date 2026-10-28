@@ -39,7 +39,7 @@ export function projectSessionId(project: string, raw = process.env.CLAUDE_PROJE
 }
 
 export function cloudFollowupReady(env: NodeJS.ProcessEnv = process.env): boolean {
-  return Boolean(env.CLAUDE_CODE_OAUTH_TOKEN?.trim() || env.CLAUDE_CODE_OAUTH_REFRESH_TOKEN?.trim());
+  return Boolean(env.CLAUDE_CODE_OAUTH_TOKEN?.trim() || (env.CLAUDE_CODE_OAUTH_REFRESH_TOKEN?.trim() && env.CLAUDE_CODE_OAUTH_SCOPES?.trim()));
 }
 
 export type CloudFollowupRunner = (sessionId: string, message: string) => Promise<void>;
@@ -64,7 +64,7 @@ async function runClaudeCli(sessionId: string, message: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const child = spawn("claude", ["-p", "--cloud", sessionId], {
       shell: false,
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: "pipe",
       env: process.env
     });
     let settled = false;
