@@ -85,6 +85,7 @@ async function tick() {
       catch (e) { job.state = "error"; job.error = safeReviewError(e); }
       job.updated_at = new Date().toISOString();
       await db.set(key(id), JSON.stringify(job), { EX: TTL });
+      console.log(JSON.stringify({ event: "grok_review_finished", job_id: id, pr: job.input.pr_number, state: job.state, sha: job.result?.sha ?? null, published: job.result?.published ?? false, error: job.error ?? null }));
     } finally {
       await db.eval("if redis.call('GET',KEYS[1]) == ARGV[1] then return redis.call('DEL',KEYS[1]) else return 0 end", { keys: ["bridge:grok:worker"], arguments: [lease] });
     }
