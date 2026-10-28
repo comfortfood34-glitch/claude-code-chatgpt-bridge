@@ -66,6 +66,20 @@ export async function queueCloudFollowup(
   await runner(sessionId, message);
 }
 
+/**
+ * Classify provider failures without leaking provider stderr/stdout (which may
+ * include URLs, account details or tokens). The diagnosis has only fixed values.
+ */
+export function classifyClaudeCliFailure(output: string, code: number | null): string {
+  if (/session not found|does not match a session|not authorized to access.*session/i.test(output)) return "claude_cli_session_not_found_or_access_denied";
+  if (/archived and cannot accept|session.*archived/i.test(output)) return "claude_cli_session_archived";
+  if (/authenticate|authentication|not logged in|unauthorized|access token|expired token|invalid token|auth login|401\b/i.test(output)) return "claude_cli_auth_rejected";
+  if (/cloud sessions aren't available|not enabled for your account|organization.s policy/i.test(output)) return "claude_cli_cloud_unavailable";
+  if (/unknown option|unknown argument|--cloud.*not recognized|unrecognized option/i.test(output)) return "claude_cli_unsupported_flags";
+  if (/network|connection|timeout|ETIMEDOUT|ECONNRESET|fetch failed/i.test(output)) return "claude_cli_network_error";
+  return "claude_cli_send_failed_exit_" + (code === null ? "signal" : String(code));
+}
+
 async function runClaudeCli(sessionId: string, message: string): Promise<void> {
   if (!cloudFollowupReady()) throw new Error("claude_cli_auth_missing");
   return new Promise<void>((resolve, reject) => {
@@ -86,14 +100,19 @@ async function runClaudeCli(sessionId: string, message: string): Promise<void> {
       child.kill("SIGKILL");
       finish(new Error("claude_cli_timeout"));
     }, 45_000);
-    // Drain streams but NEVER log output: it may contain user data or secrets.
-    child.stdout.resume();
-    child.stderr.resume();
+    // Retain a small, private diagnostic buffer only to match known error classes.
+    // Never log or return raw provider output, which may contain sensitive data.
+    let providerOutput = "";
+    const collect = (chunk: Buffer) => {
+      if (providerOutput.length < 8_000) providerOutput += chunk.toString("utf8").slice(0, 8_000 - providerOutput.length);
+    };
+    child.stdout.on("data", collect);
+    child.stderr.on("data", collect);
     child.once("error", error => finish(new Error(
       (error as NodeJS.ErrnoException).code === "ENOENT"
         ? "claude_cli_not_installed" : "claude_cli_spawn_failed"
     )));
-    child.once("close", code => finish(code === 0 ? undefined : new Error("claude_cli_send_failed")));
+    child.once("close", code => finish(code === 0 ? undefined : new Error(classifyClaudeCliFailure(providerOutput, code))));
     child.stdin.on("error", () => { /* The close handler reports the failure. */ });
     child.stdin.end(message);
   });

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  cloudFollowupReady, parseFollowupTask, parseProjectSessions, projectSessionId,
+  classifyClaudeCliFailure, cloudFollowupReady, parseFollowupTask, parseProjectSessions, projectSessionId,
   queueCloudFollowup, validateCloudSessionId
 } from "./cloud-followup.js";
 
@@ -62,4 +62,14 @@ test("legacy project envelope refuses ambiguous or missing routing", () => {
   for (const value of ["Confira status do ZAS", "PROJECT: zas", "PROJECT: ../zas\nx", "PROJECT: test\n "]) {
     assert.throws(() => parseFollowupTask(value), /existing_session_requires_project_prefix/);
   }
+});
+
+test("CLI diagnosis is a fixed code and does not disclose provider messages", () => {
+  assert.equal(classifyClaudeCliFailure("Error: Authentication required. claude auth login", 1), "claude_cli_auth_rejected");
+  assert.equal(classifyClaudeCliFailure("Session not found: cse_abc", 1), "claude_cli_session_not_found_or_access_denied");
+  assert.equal(classifyClaudeCliFailure("cloud session is archived and cannot accept new messages", 1), "claude_cli_session_archived");
+  assert.equal(classifyClaudeCliFailure("Unknown option --cloud", 2), "claude_cli_unsupported_flags");
+  const withSecret = classifyClaudeCliFailure("SECRET-SHOULD-NOT-LEAK", 42);
+  assert.equal(withSecret, "claude_cli_send_failed_exit_42");
+  assert.equal(withSecret.includes("SECRET"), false);
 });
