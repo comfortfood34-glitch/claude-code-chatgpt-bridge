@@ -4,6 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import { fireClaudeRoutine } from "./claude.js";
+import { cloudFollowupReady, parseProjectSessions, projectSessionId, queueCloudFollowup } from "./cloud-followup.js";
 import { attachSession, completeJob, createJob, failJob, getJob } from "./jobs.js";
 
 const app = express();
@@ -42,7 +43,7 @@ function mcpServer() {
   const server = new McpServer({ name: "Claude Code Bridge", version: "0.3.0" });
   server.registerTool("send_to_claude_code", {
     title: "Enviar tarefa ao Claude Code",
-    description: "Inicia uma sessão real do Claude Code Web. O resultado pode ser consultado depois com get_claude_code_result.",
+    description: "ATENÇÃO: inicia uma sessão NOVA. Para continuar o trabalho do projeto na MESMA conversa, use continue_claude_code_session; só use esta ferramenta quando o usuário pedir expressamente uma nova sessão.",
     inputSchema: { task: z.string().min(1).max(65_536), mode: z.enum(["read_only", "implementation"]).default("read_only") }
   }, async ({ task, mode }) => {
     const rule = mode === "read_only"
@@ -64,6 +65,55 @@ Use status "error" se não conseguir concluir. Faça essa chamada apenas uma vez
       return { content: [{ type: "text", text: `Sessão iniciada.\nCódigo de acompanhamento: ${job.id}\nID da sessão: ${result.claude_code_session_id}\nAbrir: ${result.claude_code_session_url}\nPara receber a resposta aqui, use get_claude_code_result com o código de acompanhamento.` }] };
     } catch (error) {
       await failJob(job.id, error instanceof Error ? error.message : "Falha ao iniciar a sessão.");
+      throw error;
+    }
+  });
+  server.registerTool("get_claude_project_sessions", {
+    title: "Consultar sessões persistentes por projeto",
+    description: "Lista os projetos com sessão Claude Code fixa, sem abrir qualquer sessão ou enviar mensagens. Indica se a autenticação do CLI foi configurada.",
+    inputSchema: {}
+  }, async () => {
+    const sessions = parseProjectSessions(process.env.CLAUDE_PROJECT_SESSIONS);
+    return { content: [{ type: "text", text: JSON.stringify({
+      projects: Object.entries(sessions).map(([project, session_id]) => ({
+        project, session_id, url: "https://claude.ai/code/" + session_id
+      })),
+      cli_oauth_configured: cloudFollowupReady(),
+      note: "Sessões persistentes não são criadas automaticamente."
+    }) }] };
+  });
+  server.registerTool("continue_claude_code_session", {
+    title: "Continuar conversa existente no Claude Code",
+    description: "ENVIA À MESMA CONVERSA cloud de um projeto; não cria sessão. Só funciona quando a sessão está mapeada e o CLI autenticado. Retorna job_id para get_claude_code_result.",
+    inputSchema: {
+      project: z.string().regex(/^[a-z][a-z0-9_-]{0,47}$/),
+      task: z.string().min(1).max(50_000),
+      mode: z.enum(["read_only", "implementation"]).default("read_only")
+    }
+  }, async ({ project, task, mode }) => {
+    const sessionId = projectSessionId(project);
+    if (!cloudFollowupReady()) {
+      throw new Error("claude_cli_auth_missing: é necessário autenticar o CLI do Claude no servidor; o token da rotina API não serve para continuar sessões.");
+    }
+    const { job, callbackToken } = await createJob();
+    await attachSession(job.id, sessionId, "https://claude.ai/code/" + sessionId);
+    const publicUrl = (process.env.BRIDGE_PUBLIC_URL ?? "https://claude-code-chatgpt-bridge.onrender.com").replace(/\/$/, "");
+    const rule = mode === "read_only"
+      ? "MODO SOMENTE LEITURA: não faça edições, commits, deploy nem alterações em dados."
+      : "MODO IMPLEMENTAÇÃO: trabalhe somente no repositório da sessão existente. Sem deploy, sem alterar produção ou pagamentos LIVE. Realize testes locais, apresente commits e PR para revisão.";
+    const callback = "\n\nRETORNO OBRIGATÓRIO AO CHATGPT: quando terminar esta tarefa, envie UMA chamada HTTP POST para " +
+      publicUrl + "/callbacks/claude/" + job.id + " com JSON {\"token\":\"" + callbackToken +
+      "\",\"status\":\"completed\",\"result\":\"RELATÓRIO FINAL COMPLETO\"}. Use status error se falhar. Não exponha tokens no relatório. Não inicie outra sessão.";
+    try {
+      await queueCloudFollowup(sessionId, rule + "\n\n" + task + callback);
+      return { content: [{ type: "text", text:
+        "Mensagem adicionada à sessão EXISTENTE do projeto " + project +
+        ". Nenhuma sessão nova foi criada.\nCódigo de acompanhamento: " + job.id +
+        "\nSessão: https://claude.ai/code/" + sessionId +
+        "\nAcompanhe via get_claude_code_result."
+      }] };
+    } catch (error) {
+      await failJob(job.id, error instanceof Error ? error.message : "Falha ao enviar o complemento.");
       throw error;
     }
   });
