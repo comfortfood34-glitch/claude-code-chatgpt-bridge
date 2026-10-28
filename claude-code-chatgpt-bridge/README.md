@@ -8,7 +8,7 @@ Servidor MCP privado que permite ao ChatGPT iniciar uma sessão real do Claude C
 - A URL de destino é restrita ao endpoint oficial `api.anthropic.com` para impedir chamadas arbitrárias.
 - O modo padrão é somente leitura.
 - A rotina deve ser configurada sem deploy automático e sem alterações em produção.
-- Cada solicitação cria uma nova sessão do Claude Code, retorna seu link e um código de acompanhamento.
+- A rotina cria uma sessão nova somente após autorização explícita; complementos de projeto usam uma conversa já existente.
 - Ao terminar, o Claude envia o relatório à ponte por um callback assinado e temporário.
 
 ## 1. Criar a rotina no Claude Code
@@ -52,7 +52,7 @@ A API experimental de Rotinas inicia a sessão, mas não transmite sua saída. P
 ## 4. Conversas persistentes por projeto (sem abrir nova rotina)
 
 **Use `continue_claude_code_session` quando o usuário pedir um complemento.**
-A ferramenta antiga `send_to_claude_code` usa a API de rotinas e **sempre cria uma nova sessão**; seu uso deve ficar restrito a pedidos explícitos para começar uma sessão nova.
+A ferramenta antiga `send_to_claude_code` usa a API de rotinas e **sempre cria uma nova sessão**; agora exige `create_new_session:true` explícito. Para continuar projetos, use sempre a nova ferramenta.
 
 O CLI oficial do Claude Code permite enviar um complemento à sessão em nuvem existente com:
 
