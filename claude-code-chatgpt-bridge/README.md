@@ -171,7 +171,7 @@ Render Free pode dormir apesar de timers internos. Polling não garante vigilân
 
 As partes de um arquivo grande preservam caminho e número do fragmento, mas revisão fragmentada pode perder relações entre arquivos. O relatório explicita essa limitação. Antes de cada bloco o HEAD é conferido; mudança cancela a análise. Depois de cada bloco, o resultado validado e redigido é salvo no Redis no progresso da tarefa. Falha posterior mantém esse checkpoint para inspeção; não há retomada nem cobrança automática de blocos incertos. Um relatório só é publicado após concluir todos os blocos e conferir HEAD novamente. Falha não publica um parecer parcial como concluído.
 
-O worker renova sua lease a cada 30 segundos e registra progresso (etapa, blocos concluídos, total, SHA) sem conteúdo ou segredos. Erros de timeout da xAI, rede e JSON/esquema inválido têm códigos diferentes. A leitura de status do conector informa a etapa atual, em vez de apenas running.
+O worker renova sua lease a cada 30 segundos sem reserializar os checkpoints (preserva arrays JSON vazios) e registra progresso (etapa, blocos concluídos, total, SHA) sem conteúdo ou segredos. Erros de timeout da xAI, rede e JSON/esquema inválido têm códigos diferentes. A leitura de status do conector informa a etapa atual, em vez de apenas running.
 
 Compatibilidade para clientes com catálogo MCP antigo: `send_to_claude_code` aceita os comandos exatos `GROK_STATUS` e `GROK_REVIEW: 955`; eles não enviam mensagem nem criam sessão Claude. `get_claude_code_result` também consulta um UUID de revisão Grok quando não há tarefa Claude correspondente. As ferramentas continuam autenticadas pelo OAuth da ponte.
 
