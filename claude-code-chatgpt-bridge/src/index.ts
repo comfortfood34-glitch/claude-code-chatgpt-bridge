@@ -8,7 +8,7 @@ import { cloudFollowupReady, parseFollowupTask, parseProjectSessions, projectSes
 import { attachSession, completeJob, createJob, failJob, getJob, markJobSent } from "./jobs.js";
 import { ackMacFollowup, authorizedRelayToken, claimMacFollowup, enqueueMacFollowup, readMacRelayState } from "./mac-relay.js";
 
-import { grokConfiguration, probeGrok, ReviewRequest, validSignature, webhookReview } from "./grok.js";
+import { grokConfiguration, probeGrok, logGrokReadiness, ReviewRequest, validSignature, webhookReview } from "./grok.js";
 import { enqueueReview, getReviewJob, startGrokWorker } from "./grok-queue.js";
 
 const app = express();
@@ -329,5 +329,6 @@ app.post("/mcp", async (req,res) => {
 app.get("/mcp",(req,res)=>{if(requireAuth(req,res))res.status(405).json({error:"method_not_allowed"});});
 app.delete("/mcp",(req,res)=>{if(requireAuth(req,res))res.status(405).json({error:"method_not_allowed"});});
 startGrokWorker();
+void logGrokReadiness();
 const port=Number(process.env.PORT??3000);
 app.listen(port,"0.0.0.0",()=>console.log(JSON.stringify({event:"server_started",port,instance:randomUUID()})));

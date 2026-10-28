@@ -68,3 +68,11 @@ test("new HEAD during analysis prevents publishing a stale review", async () => 
   assert.equal(result.published, false);
   assert.equal(comments, 0);
 });
+
+
+test("daily budget receipt is terminal skipped, not a retryable queue error", async () => {
+  const { queueReceipt, safeReviewError } = await import("./grok-queue.js");
+  assert.deepEqual(queueReceipt("budget_limit"), { job_id: null, state: "skipped", reason: "grok_daily_review_limit" });
+  assert.equal(safeReviewError(new Error("no_reviewable_diff")), "no_reviewable_diff");
+  assert.equal(safeReviewError(new Error("secret=private-value")), "review_failed_no_automatic_retry");
+});

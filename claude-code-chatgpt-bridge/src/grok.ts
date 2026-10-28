@@ -35,7 +35,7 @@ export function responseText(body: unknown) {
   return text;
 }
 export function grokConfiguration() {
-  return { xai_key_present: Boolean(process.env.XAI_API_KEY), github_token_present: Boolean(process.env.GROK_GITHUB_TOKEN), webhook_secret_present: (process.env.GROK_WEBHOOK_SECRET?.length ?? 0) >= 32, persistent_queue: Boolean(process.env.REDIS_URL), model: process.env.XAI_REVIEW_MODEL ?? "grok-4.7", repository: REVIEW_REPO };
+  return { xai_key_present: Boolean(process.env.XAI_API_KEY), github_token_present: Boolean(process.env.GROK_GITHUB_TOKEN), webhook_secret_present: (process.env.GROK_WEBHOOK_SECRET?.length ?? 0) >= 32, polling_enabled: process.env.GROK_POLL_ENABLED === "true", persistent_queue: Boolean(process.env.REDIS_URL), model: process.env.XAI_REVIEW_MODEL ?? "grok-4.7", repository: REVIEW_REPO };
 }
 async function github(path: string, net: Net, init?: RequestInit) {
   const token = process.env.GROK_GITHUB_TOKEN;
@@ -50,6 +50,19 @@ export async function probeGrok(net: Net = fetch) {
     const r = await net("https://api.x.ai/v1/models", { headers: { Authorization: "Bearer " + process.env.XAI_API_KEY }, signal: AbortSignal.timeout(20_000), redirect: "error" });
     return { configured: true, verified: r.ok, code: r.ok ? "models_access_ok_not_inference_test" : "xai_http_" + r.status };
   } catch { return { configured: true, verified: false, code: "xai_network_error" }; }
+}
+export async function listOpenReviewTargets(net: Net = fetch) {
+  return z.array(Pull).parse(await github("/pulls?state=open&per_page=100&sort=updated&direction=desc", net))
+    .map(p => ({ pr_number: p.number, sha: p.head.sha }));
+}
+export async function logGrokReadiness() {
+  if (!process.env.XAI_API_KEY && !process.env.GROK_GITHUB_TOKEN) return;
+  let githubCode = "github_token_missing";
+  if (process.env.GROK_GITHUB_TOKEN) {
+    try { await listOpenReviewTargets(); githubCode = "github_pr_read_ok_write_not_tested"; }
+    catch (e) { githubCode = e instanceof Error && /^github_http_\d{3}$/.test(e.message) ? e.message : "github_probe_failed"; }
+  }
+  console.log(JSON.stringify({ event: "grok_readiness", ...grokConfiguration(), xai_probe: await probeGrok(), github_probe: githubCode }));
 }
 
 export async function reviewPull(input: ReviewInput, net: Net = fetch) {

@@ -139,7 +139,7 @@ Em Settings → Webhooks do **soyzas**, cadastrar:
 - Secret igual a `GROK_WEBHOOK_SECRET`
 - Somente evento Pull requests. Eventos opened/reopened/synchronize/ready_for_review disparam a revisão; comentários não disparam loops.
 
-Habilitar apenas depois de configurar as credenciais. Payload precisa de assinatura HMAC SHA-256; repositórios diferentes são ignorados. Entregas são deduplicadas pelo delivery ID por sete dias. Eventos distintos podem revisar o mesmo SHA; o limite diário contém o custo, mas não é um orçamento monetário. Não há varredura inicial automática das PRs existentes: solicitar cada PR pela ferramenta autenticada.
+Habilitar apenas depois de configurar as credenciais. Payload precisa de assinatura HMAC SHA-256; repositórios diferentes são ignorados. Entregas são deduplicadas pelo delivery ID por sete dias, incluindo eventos ignorados pelo limite diário (resposta 202 skipped, sem migração para o orçamento do dia seguinte). Eventos distintos podem revisar o mesmo SHA; o limite diário contém o custo, mas não é um orçamento monetário. Não há varredura inicial automática das PRs existentes: solicitar cada PR pela ferramenta autenticada.
 
 ### Ferramentas MCP novas
 
@@ -158,3 +158,10 @@ Se HEAD mudar durante a análise, o resultado fica marcado desatualizado e não 
 ### Validação
 
 `npm test`: TypeScript + testes locais com rede simulada para assinatura, allowlist de repositório/evento, omissão de segredos, contrato xAI, vínculo ao SHA e bloqueio de publicação de relatório desatualizado. Fila Redis e ponta a ponta em contas reais exigem validação no ambiente configurado; não foram comprovados só por esses testes.
+
+
+### Alternativa sem cadastrar webhook: polling
+
+`GROK_POLL_ENABLED=true` consulta a cada minuto até 100 PRs abertas (mais recentemente atualizadas primeiro), inclusive rascunhos. Cada PR+SHA recebe uma revisão por sete dias. Usa a mesma fila e limite diário; após atingir o limite, a consulta interrompe o lote. Um SHA ignorado pelo orçamento não será automaticamente reativado no dia seguinte durante a retenção. Não precisa de permissão Administration nem de GROK_WEBHOOK_SECRET. Usar polling OU webhook para evitar revisões duplicadas por eventos de origens distintas. Ao iniciar, o servidor escreve somente códigos sanitizados de acesso xAI/models e GitHub/PRs nos logs (sem valores de credenciais, conteúdo das PRs ou respostas brutas). O probe não comprova saldo/inferência ou permissão de escrita; uma revisão real precisa completar e comentar para confirmar o fluxo.
+
+Render Free pode dormir apesar de timers internos. Polling não garante vigilância contínua se a instância estiver suspensa por inatividade; para SLA contínuo, usar webhook com tráfego ou serviço sempre ativo. Ativar polling envia patches das PRs à xAI e consome a API, dentro do limite de tarefas (não teto monetário).
