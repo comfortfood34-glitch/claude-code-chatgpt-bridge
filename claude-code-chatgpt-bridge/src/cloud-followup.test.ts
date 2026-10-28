@@ -73,3 +73,10 @@ test("CLI diagnosis is a fixed code and does not disclose provider messages", ()
   assert.equal(withSecret, "claude_cli_send_failed_exit_42");
   assert.equal(withSecret.includes("SECRET"), false);
 });
+
+test("diagnoses cloud provider and policy failures without exposing details", () => {
+  assert.equal(classifyClaudeCliFailure("Cloud sessions aren't available with Amazon Bedrock", 1), "claude_cli_unsupported_provider");
+  assert.equal(classifyClaudeCliFailure("Cloud sessions are disabled by your organization's policy", 1), "claude_cli_org_policy_disabled");
+  assert.equal(classifyClaudeCliFailure("Couldn't verify your organization's policy for cloud sessions", 1), "claude_cli_org_policy_not_verified");
+  assert.equal(classifyClaudeCliFailure("Cloud sessions aren't available: profile missing", 1), "claude_cli_cloud_policy_or_credential");
+});
