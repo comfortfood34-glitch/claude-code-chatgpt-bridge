@@ -114,3 +114,47 @@ A conexão Mac é feita pelo instalador do usuário (LaunchAgent do macOS), apro
 - Mac desligado/offline: fila fica pendente; a próxima inicialização pode retomar. Se um processo for interrompido **depois** de retirar o job da fila, ele não é repetido automaticamente para evitar duplicações.
 - Os relatórios de Claude ainda dependem da instrução de callback e podem ser consultados pela aba do Chrome se o callback faltar.
 - A máquina precisa estar ligada e conectada; agentes podem continuar a pedir aprovações próprias da Anthropic para ações sensíveis.
+
+
+## 6. Grok — revisão independente de PRs do ZAS
+
+Não altera o site ZAS nem o fluxo Claude. Sem auto-merge, deploy ou aprovação automática.
+
+### Configuração no Render
+
+- `XAI_API_KEY`: chave de inferência xAI, só no ambiente secreto (já solicitada ao dono).
+- `GROK_GITHUB_TOKEN`: token fine-grained dedicado ao repositório `comfortfood34-glitch/soyzas`, com Contents Read, Pull requests Read e Issues Write (os relatórios são comentários, não aprovações). Uma GitHub App pode fornecer installation token renovado externamente; esta implementação não renova tokens de App.
+- `GROK_WEBHOOK_SECRET`: segredo aleatório de pelo menos 32 caracteres; use o mesmo no webhook GitHub.
+- `REDIS_URL`: obrigatória para fila persistente e deduplicação de entregas.
+- Opcionais: `XAI_REVIEW_MODEL` (padrão `grok-4.7`), `GROK_MAX_REVIEWS_PER_DAY` (padrão 20, máximo 100).
+
+Nunca compartilhar tokens por conversa ou adicionar valores ao repositório. Esta versão não lê nem reutiliza credenciais do conector GitHub do ChatGPT.
+
+### Webhook
+
+Em Settings → Webhooks do **soyzas**, cadastrar:
+
+- URL `https://claude-code-chatgpt-bridge.onrender.com/webhooks/github/grok`
+- Content type `application/json`
+- Secret igual a `GROK_WEBHOOK_SECRET`
+- Somente evento Pull requests. Eventos opened/reopened/synchronize/ready_for_review disparam a revisão; comentários não disparam loops.
+
+Habilitar apenas depois de configurar as credenciais. Payload precisa de assinatura HMAC SHA-256; repositórios diferentes são ignorados. Entregas são deduplicadas pelo delivery ID por sete dias. Eventos distintos podem revisar o mesmo SHA; o limite diário contém o custo, mas não é um orçamento monetário. Não há varredura inicial automática das PRs existentes: solicitar cada PR pela ferramenta autenticada.
+
+### Ferramentas MCP novas
+
+Atualizar a definição do conector após publicar esta versão:
+
+- `get_grok_status`: presença de configuração sem valores; `probe=true` verifica acesso a `/v1/models` sem geração. Isso não comprova saldo ou inferência.
+- `review_github_pr_with_grok`: repository fixo `comfortfood34-glitch/soyzas`, pr_number e publish (padrão true). Retorna job_id.
+- `get_grok_review_result`: queued/running/completed/error e relatório para o SHA analisado.
+
+Worker consome uma tarefa por vez. Fila e resultados ficam no Redis; resultados expiram em sete dias. Chamada xAI com limite de 7.000 tokens de saída e 100.000 caracteres de patches. Arquivos de credenciais comuns são excluídos e padrões comuns de tokens redigidos, mas não há garantia de detectar todo segredo em código: nenhum segredo deve estar em PRs. Conteúdo é enviado à xAI com `store:false`. O relatório lista arquivos omitidos e limitações. Não executa código nem testes.
+
+Jobs interrompidos **depois** de iniciar não são reenviados automaticamente, evitando custos e comentários duplicados em resultado incerto; consulta após dez minutos informa falha. Nova solicitação consciente é necessária. Render Free pode dormir sem tráfego; webhooks acordam o serviço, mas não há SLA de processamento imediato. Para operação contínua, avaliar serviço sempre ativo.
+
+Se HEAD mudar durante a análise, o resultado fica marcado desatualizado e não é comentado na PR. Há ainda uma pequena janela entre a última leitura de HEAD e o comentário; o SHA explícito permanece a referência. Revisão é orientação técnica: nenhum achado não significa ausência de falhas. O coordenador deve validar os achados antes de encaminhar correções ao Claude. Encaminhamento automático Claude e revisão de todas as PRs históricas não fazem parte desta versão.
+
+### Validação
+
+`npm test`: TypeScript + testes locais com rede simulada para assinatura, allowlist de repositório/evento, omissão de segredos, contrato xAI, vínculo ao SHA e bloqueio de publicação de relatório desatualizado. Fila Redis e ponta a ponta em contas reais exigem validação no ambiente configurado; não foram comprovados só por esses testes.

@@ -8,8 +8,24 @@ import { cloudFollowupReady, parseFollowupTask, parseProjectSessions, projectSes
 import { attachSession, completeJob, createJob, failJob, getJob, markJobSent } from "./jobs.js";
 import { ackMacFollowup, authorizedRelayToken, claimMacFollowup, enqueueMacFollowup, readMacRelayState } from "./mac-relay.js";
 
+import { grokConfiguration, probeGrok, ReviewRequest, validSignature, webhookReview } from "./grok.js";
+import { enqueueReview, getReviewJob, startGrokWorker } from "./grok-queue.js";
+
 const app = express();
 app.disable("x-powered-by"); app.set("trust proxy", 1);
+// Raw body is required to authenticate GitHub; mount before JSON parsing.
+app.post("/webhooks/github/grok", express.raw({ type: "application/json", limit: "2mb" }), async (req, res) => {
+  const secret = process.env.GROK_WEBHOOK_SECRET ?? "";
+  if (secret.length < 32) { res.status(503).json({ error: "webhook_not_configured" }); return; }
+  if (!Buffer.isBuffer(req.body) || !validSignature(req.body, req.header("x-hub-signature-256") ?? "", secret)) { res.status(401).json({ error: "invalid_signature" }); return; }
+  try {
+    const input = webhookReview(req.header("x-github-event") ?? "", JSON.parse(req.body.toString("utf8")));
+    if (!input) { res.status(200).json({ ignored: true }); return; }
+    const delivery = req.header("x-github-delivery") ?? "";
+    if (!/^[a-zA-Z0-9_-]{1,100}$/.test(delivery)) { res.status(400).json({ error: "invalid_delivery_id" }); return; }
+    res.status(202).json(await enqueueReview(input, delivery));
+  } catch { res.status(503).json({ error: "review_queue_unavailable_or_daily_limit" }); }
+});
 app.use(express.json({ limit: "80kb" })); app.use(express.urlencoded({ extended: false }));
 type Payload = Record<string, unknown> & { exp: number; kind: string };
 const bridgeSecret = () => {
@@ -158,6 +174,17 @@ Use status "error" se não conseguir concluir. Faça essa chamada apenas uma vez
     if (job.status === "running") return { content: [{ type: "text", text: `Tarefa enfileirada ou aguardando resposta do Claude.\nSessão: ${job.sessionUrl ?? "iniciando"}` }] };
     return { content: [{ type: "text", text: `Status: ${job.status}\nSessão: ${job.sessionUrl ?? "indisponível"}\n\nResposta do Claude Code:\n${job.result ?? "Sem relatório."}` }] };
   });
+  server.registerTool("get_grok_status", {
+    title: "Verificar integração Grok", description: "Mostra apenas presença das configurações. probe=true verifica acesso a modelos, sem enviar código nem gastar tokens de geração.",
+    inputSchema: { probe: z.boolean().default(false) }
+  }, async ({ probe }) => ({ content: [{ type: "text", text: JSON.stringify({ ...grokConfiguration(), ...(probe ? { probe: await probeGrok() } : {}) }) }] }));
+  server.registerTool("review_github_pr_with_grok", {
+    title: "Solicitar revisão Grok de PR do ZAS", description: "Enfileira análise de diffs via API xAI. Pode publicar relatório na PR, nunca aprova nem faz merge. Retorna job_id; consultar get_grok_review_result.",
+    inputSchema: ReviewRequest.shape
+  }, async (input) => ({ content: [{ type: "text", text: JSON.stringify(await enqueueReview(input)) }] }));
+  server.registerTool("get_grok_review_result", {
+    title: "Consultar revisão Grok", description: "Estado real queued/running/completed/error e relatório associado ao SHA analisado.", inputSchema: { job_id: z.string().uuid() }
+  }, async ({ job_id }) => ({ content: [{ type: "text", text: JSON.stringify(await getReviewJob(job_id)) }] }));
   return server;
 }
 
@@ -301,5 +328,6 @@ app.post("/mcp", async (req,res) => {
 });
 app.get("/mcp",(req,res)=>{if(requireAuth(req,res))res.status(405).json({error:"method_not_allowed"});});
 app.delete("/mcp",(req,res)=>{if(requireAuth(req,res))res.status(405).json({error:"method_not_allowed"});});
+startGrokWorker();
 const port=Number(process.env.PORT??3000);
 app.listen(port,"0.0.0.0",()=>console.log(JSON.stringify({event:"server_started",port,instance:randomUUID()})));
