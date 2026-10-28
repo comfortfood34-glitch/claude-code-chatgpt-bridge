@@ -47,6 +47,9 @@ test("review sends bounded diff to xAI, pins SHA, publishes comment without appr
   assert.equal(result.sha, sha);
   const request = JSON.parse(calls.find(c => c.url.includes("api.x.ai"))!.body);
   assert.equal(request.store, false);
+  assert.equal(request.stream, true);
+  assert.equal(request.reasoning.effort, "low");
+  assert.equal(request.text.format.type, "json_schema");
   assert.equal(request.tools, undefined);
   assert.ok(!JSON.stringify(request).includes("never-send-this"));
   assert.ok(result.report.includes(".env"));
@@ -61,7 +64,7 @@ test("new HEAD during analysis prevents publishing a stale review", async () => 
     if (u.includes("/files?")) return Response.json([{ filename: "f.ts", status: "modified", changes: 1, patch: "+x" }]);
     if (u.includes("api.x.ai")) return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify({ summary: "Recorte", findings: [], limitations: [] }) }] }] });
     if (u.endsWith("/comments")) { comments++; return Response.json({}); }
-    return Response.json({ number: 955, state: "open", title: "PR", head: { sha: (++reads === 1 ? "a" : "b").repeat(40) } });
+    return Response.json({ number: 955, state: "open", title: "PR", head: { sha: (++reads <= 2 ? "a" : "b").repeat(40) } });
   };
   const result = await reviewPull({ repository: REVIEW_REPO, pr_number: 955, publish: true }, net);
   assert.equal(result.stale, true);
